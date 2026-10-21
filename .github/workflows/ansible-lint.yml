@@ -22,7 +22,7 @@ jobs:
           python-version: "3.12"
       - run: pip install ansible-core ansible-lint
       - run: ansible-galaxy collection install -r requirements.yml
-      - run: ansible-lint rotate-root.yml
+      - run: ansible-lint rotate-root.yml rotate-root-awscli.yml
 
   module-test:
     runs-on: ubuntu-latest

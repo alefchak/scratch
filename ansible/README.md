@@ -27,6 +27,14 @@ usual `region`, `profile` and credential options. CI tests it against a local
 [moto](https://github.com/getmoto/moto) server
 ([`tests/test_secretsmanager_stage.yml`](tests/test_secretsmanager_stage.yml)).
 
+### rotate-root-awscli.yml
+
+The same flow, calling the AWS CLI through `ansible.builtin.command` instead of
+the custom module. The new password is passed to the CLI through a temporary
+`0600` file, so it never appears in the process list. It needs the AWS CLI on
+the controller, but no code of your own to maintain. The assumptions and
+requirements below apply to both playbooks.
+
 ### Assumptions
 
 - One secret per host named `root/<inventory_hostname>`, holding a plain string.
@@ -39,6 +47,7 @@ usual `region`, `profile` and credential options. CI tests it against a local
 
 - Collections: `ansible-galaxy collection install -r requirements.yml`
 - `boto3`/`botocore`, and `passlib` (used by `password_hash`)
+- For `rotate-root-awscli.yml` only: the AWS CLI
 - AWS credentials and region from the environment or a profile, with
   `secretsmanager:DescribeSecret`, `GetSecretValue`, `PutSecretValue` and
   `UpdateSecretVersionStage` on the secrets
