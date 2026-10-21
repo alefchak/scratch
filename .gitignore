@@ -1,0 +1,8 @@
+# Ansible
+*.retry
+ansible/inventory.ini
+ansible/.vault_pass*
+
+# Never commit credentials
+.env
+*.pem

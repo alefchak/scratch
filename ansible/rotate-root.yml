@@ -1,0 +1,230 @@
+---
+# Rotate the root password on each host and store it in AWS Secrets Manager.
+#
+# Order per host:
+#   1. Save the current /etc/shadow hash (so rollback never depends on the old plaintext)
+#   2. Generate a new password and hash it once
+#   3. Write it to Secrets Manager as AWSPENDING (AWSCURRENT is untouched) and read it back
+#   4. Set the new hash on the host and verify /etc/shadow
+#   5. Promote AWSPENDING -> AWSCURRENT (AWS moves the old version to AWSPREVIOUS)
+#   On any failure: restore the old hash on the host and drop the AWSPENDING label.
+#
+# Requirements on the controller: amazon.aws + community.general collections,
+# AWS CLI, boto3/botocore, passlib (for password_hash). AWS creds/region via env or profile.
+# Connect with an SSH key + sudo, NOT the root password.
+
+- name: Rotate root password
+  hosts: linux_servers
+  become: true
+  serial:
+    - 1          # canary
+    - 5
+    - "20%"
+  max_fail_percentage: 0
+  gather_facts: false
+
+  vars:
+    secret_id: "root/{{ inventory_hostname }}"   # one secret per host, plain string value
+    max_class_repeat: 3
+
+  tasks:
+    - name: Rotate with rollback
+      block:
+        # ---------- 1. Capture current state ----------
+        - name: Read current root shadow entry
+          ansible.builtin.command: getent shadow root
+          register: old_shadow
+          changed_when: false
+          no_log: true
+
+        - name: Save current hash for rollback
+          ansible.builtin.set_fact:
+            old_hash: "{{ old_shadow.stdout.split(':')[1] }}"
+          no_log: true
+
+        - name: Describe secret (no secret material returned)
+          ansible.builtin.command:
+            argv: [aws, secretsmanager, describe-secret, --secret-id, "{{ secret_id }}"]
+          delegate_to: localhost
+          become: false
+          register: secret_desc
+          changed_when: false
+
+        - name: Find current version id
+          ansible.builtin.set_fact:
+            old_version_id: >-
+              {{ (secret_desc.stdout | from_json).VersionIdsToStages
+                 | dict2items
+                 | selectattr('value', 'contains', 'AWSCURRENT')
+                 | map(attribute='key') | first }}
+
+        # ---------- 2. Generate ----------
+        - name: Generate compliant password
+          ansible.builtin.set_fact:
+            new_pw: >-
+              {{ lookup('community.general.random_string',
+                        length=20,
+                        min_lower=2, min_upper=2,
+                        min_numeric=2, min_special=2,
+                        override_special='!@#%^*-_=+') }}
+          register: pw_gen
+          until: >-
+            pw_gen.ansible_facts.new_pw is not
+            search('[a-z]{' ~ (max_class_repeat + 1) ~ '}|[A-Z]{' ~ (max_class_repeat + 1) ~
+                   '}|[0-9]{' ~ (max_class_repeat + 1) ~ '}|[^A-Za-z0-9]{' ~ (max_class_repeat + 1) ~ '}')
+          retries: 50
+          delay: 0
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: Hash once so the same hash is written and verified
+          ansible.builtin.set_fact:
+            new_hash: "{{ new_pw | password_hash('sha512') }}"
+          no_log: true
+
+        # ---------- 3. Stage in Secrets Manager ----------
+        - name: Create temp file for secret value (keeps it out of the process list)
+          ansible.builtin.tempfile:
+            state: file
+          delegate_to: localhost
+          become: false
+          register: pw_tmp
+
+        - name: Write password to temp file
+          ansible.builtin.copy:
+            dest: "{{ pw_tmp.path }}"
+            content: "{{ new_pw }}"
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: Put new value as AWSPENDING
+          ansible.builtin.command:
+            argv:
+              - aws
+              - secretsmanager
+              - put-secret-value
+              - --secret-id
+              - "{{ secret_id }}"
+              - --secret-string
+              - "file://{{ pw_tmp.path }}"
+              - --version-stages
+              - AWSPENDING
+          delegate_to: localhost
+          become: false
+          register: put_result
+          changed_when: true
+
+        - name: Record pending version id
+          ansible.builtin.set_fact:
+            new_version_id: "{{ (put_result.stdout | from_json).VersionId }}"
+
+        - name: Read back AWSPENDING and compare
+          ansible.builtin.assert:
+            that:
+              - lookup('amazon.aws.secretsmanager_secret', secret_id, version_stage='AWSPENDING') == new_pw
+            quiet: true
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        # ---------- 4. Change host ----------
+        - name: Set new root password
+          ansible.builtin.user:
+            name: root
+            password: "{{ new_hash }}"
+            update_password: always
+          register: pw_changed
+          no_log: true
+
+        - name: Read new root shadow entry
+          ansible.builtin.command: getent shadow root
+          register: new_shadow
+          changed_when: false
+          no_log: true
+
+        - name: Verify host has the new hash
+          ansible.builtin.assert:
+            that:
+              - new_shadow.stdout.split(':')[1] == new_hash
+            quiet: true
+          no_log: true
+
+        # ---------- 5. Promote ----------
+        - name: Promote new version to AWSCURRENT
+          ansible.builtin.command:
+            argv:
+              - aws
+              - secretsmanager
+              - update-secret-version-stage
+              - --secret-id
+              - "{{ secret_id }}"
+              - --version-stage
+              - AWSCURRENT
+              - --move-to-version-id
+              - "{{ new_version_id }}"
+              - --remove-from-version-id
+              - "{{ old_version_id }}"
+          delegate_to: localhost
+          become: false
+          changed_when: true
+
+        - name: Clear AWSPENDING label
+          ansible.builtin.command:
+            argv:
+              - aws
+              - secretsmanager
+              - update-secret-version-stage
+              - --secret-id
+              - "{{ secret_id }}"
+              - --version-stage
+              - AWSPENDING
+              - --remove-from-version-id
+              - "{{ new_version_id }}"
+          delegate_to: localhost
+          become: false
+          changed_when: true
+          # Cosmetic only: never let this trigger a host rollback after promotion succeeded
+          failed_when: false
+
+      rescue:
+        - name: Restore old hash on host
+          ansible.builtin.user:
+            name: root
+            password: "{{ old_hash }}"
+            update_password: always
+          when: old_hash is defined and (pw_changed is changed)
+          no_log: true
+
+        - name: Drop AWSPENDING label (AWSCURRENT still points at old password)
+          ansible.builtin.command:
+            argv:
+              - aws
+              - secretsmanager
+              - update-secret-version-stage
+              - --secret-id
+              - "{{ secret_id }}"
+              - --version-stage
+              - AWSPENDING
+              - --remove-from-version-id
+              - "{{ new_version_id }}"
+          delegate_to: localhost
+          become: false
+          when: new_version_id is defined
+          changed_when: true
+          failed_when: false
+
+        - name: Stop this host
+          ansible.builtin.fail:
+            msg: "Rotation failed on {{ inventory_hostname }}; host and secret left on the old password."
+
+      always:
+        - name: Remove temp file
+          ansible.builtin.file:
+            path: "{{ pw_tmp.path }}"
+            state: absent
+          delegate_to: localhost
+          become: false
+          when: pw_tmp.path is defined
