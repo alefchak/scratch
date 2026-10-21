@@ -50,4 +50,15 @@ jobs:
                            region_name="us-east-1", aws_access_key_id="test", aws_secret_access_key="test")
           c.create_secret(Name="root/test-host", SecretString="old-password")
           EOF
-      - run: ansible-playbook tests/test_secretsmanager_stage.yml
+      - name: Run module tests
+        run: |
+          set -o pipefail
+          if ! ansible-playbook tests/test_secretsmanager_stage.yml 2>&1 | tee /tmp/test.log; then
+            # Surface failures as annotations so they show in the checks summary
+            grep -E -A12 'fatal:|FAILED!|ERROR!' /tmp/test.log | head -60 \
+              | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' | sed 's/^/::error title=module test::/'
+            echo
+            tail -20 /tmp/moto.log | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' | sed 's/^/::warning title=moto log::/'
+            echo
+            exit 1
+          fi
