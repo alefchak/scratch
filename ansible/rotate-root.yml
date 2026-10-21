@@ -99,6 +99,10 @@
           register: secret_write
           no_log: true
 
+        - name: Note that the secret now holds the new password
+          ansible.builtin.set_fact:
+            secret_written: "{{ secret_write.changed }}"
+
         - name: Read back AWSCURRENT and compare
           ansible.builtin.assert:
             that:
@@ -149,7 +153,7 @@
             state: present
           delegate_to: localhost
           become: false
-          when: secret_write is changed
+          when: secret_written | default(false) | bool
           no_log: true
 
         - name: Stop this host
