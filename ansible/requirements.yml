@@ -1,5 +1,5 @@
 ---
 collections:
   - name: amazon.aws
-  - name: community.aws
+    version: ">=7.0.0"
   - name: community.general

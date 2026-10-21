@@ -1,4 +1,4 @@
-name: ansible-lint
+name: ansible
 
 on:
   push:
@@ -23,3 +23,31 @@ jobs:
       - run: pip install ansible-core ansible-lint
       - run: ansible-galaxy collection install -r requirements.yml
       - run: ansible-lint rotate-root.yml
+
+  module-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ansible
+    env:
+      ANSIBLE_LIBRARY: library
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install ansible-core boto3 "moto[server]"
+      - run: ansible-galaxy collection install -r requirements.yml
+      - name: Check module docs parse
+        run: ansible-doc -M library secretsmanager_stage > /dev/null
+      - name: Start moto and create a secret
+        run: |
+          moto_server -p 5000 > /tmp/moto.log 2>&1 &
+          for i in $(seq 1 30); do curl -s http://127.0.0.1:5000 >/dev/null && break; sleep 1; done
+          python - <<'EOF'
+          import boto3
+          c = boto3.client("secretsmanager", endpoint_url="http://127.0.0.1:5000",
+                           region_name="us-east-1", aws_access_key_id="test", aws_secret_access_key="test")
+          c.create_secret(Name="root/test-host", SecretString="old-password")
+          EOF
+      - run: ansible-playbook tests/test_secretsmanager_stage.yml

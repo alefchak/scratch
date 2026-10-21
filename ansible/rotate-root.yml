@@ -1,23 +1,22 @@
 ---
 # Rotate the root password on each host and store it in AWS Secrets Manager,
-# using only Ansible modules and lookups (no AWS CLI).
+# using AWSPENDING so AWSCURRENT only moves once the host is confirmed.
 #
 # Order per host:
-#   1. Save the current /etc/shadow hash and the current secret value
+#   1. Save the current /etc/shadow hash (so rollback never depends on the old plaintext)
 #   2. Generate a new password and hash it once
-#   3. Write it to Secrets Manager and read it back. It becomes AWSCURRENT;
-#      AWS keeps the old value as AWSPREVIOUS.
+#   3. Write it to Secrets Manager as AWSPENDING (AWSCURRENT is untouched) and read it back
 #   4. Set the new hash on the host and verify /etc/shadow
-#   On any failure: restore the old hash on the host and write the old password
-#   back to the secret, so both stay on the old password.
+#   5. Promote AWSPENDING -> AWSCURRENT (AWS moves the old version to AWSPREVIOUS)
+#   On any failure: clear AWSPENDING and, unless the new version already became
+#   AWSCURRENT, restore the old hash on the host.
 #
-# The AWS modules can't set staging labels, so unlike an AWSPENDING-based flow
-# the secret holds the new password a few seconds before the host does.
+# AWS calls go through library/secretsmanager_stage.py, a small module in this
+# repo, because no published module can set staging labels.
 #
-# Controller requirements: amazon.aws, community.aws and community.general
-# collections; boto3/botocore; passlib (for password_hash).
-# AWS credentials and region via environment or profile.
-# Connect with an SSH key + sudo, NOT the root password.
+# Controller requirements: amazon.aws (>= 7) and community.general collections,
+# boto3/botocore, passlib (for password_hash). AWS credentials and region via
+# environment or profile. Connect with an SSH key + sudo, NOT the root password.
 
 - name: Rotate root password
   hosts: linux_servers
@@ -31,9 +30,6 @@
 
   vars:
     secret_id: "root/{{ inventory_hostname }}"   # one secret per host, plain string value
-    # The module sets the secret's description on every write; keep this
-    # matching what you want, or it will replace the existing one.
-    secret_description: "root password for {{ inventory_hostname }}"
     max_class_repeat: 3
 
   tasks:
@@ -46,18 +42,9 @@
           changed_when: false
           no_log: true
 
-        - name: Save current hash and current secret value for rollback
+        - name: Save current hash for rollback
           ansible.builtin.set_fact:
             old_hash: "{{ old_shadow.stdout.split(':')[1] }}"
-            old_pw: "{{ lookup('amazon.aws.secretsmanager_secret', secret_id) }}"
-          no_log: true
-
-        - name: Check the secret exists and has a value
-          ansible.builtin.assert:
-            that:
-              - old_pw | length > 0
-            fail_msg: "Secret {{ secret_id }} is missing or empty; not rotating this host."
-            quiet: true
           no_log: true
 
         # ---------- 2. Generate ----------
@@ -85,28 +72,25 @@
             new_hash: "{{ new_pw | password_hash('sha512') }}"
           no_log: true
 
-        # ---------- 3. Store in Secrets Manager ----------
-        - name: Write new password to Secrets Manager
-          community.aws.secretsmanager_secret:
-            name: "{{ secret_id }}"
-            secret: "{{ new_pw }}"
-            secret_type: string
-            description: "{{ secret_description }}"
-            overwrite: true
-            state: present
+        # ---------- 3. Stage in Secrets Manager ----------
+        - name: Write new password as AWSPENDING
+          secretsmanager_stage:
+            secret_id: "{{ secret_id }}"
+            action: put_pending
+            secret_string: "{{ new_pw }}"
           delegate_to: localhost
           become: false
-          register: secret_write
+          register: staged
           no_log: true
 
-        - name: Note that the secret now holds the new password
+        - name: Record pending version id
           ansible.builtin.set_fact:
-            secret_written: "{{ secret_write.changed }}"
+            new_version_id: "{{ staged.version_id }}"
 
-        - name: Read back AWSCURRENT and compare
+        - name: Read back AWSPENDING and compare
           ansible.builtin.assert:
             that:
-              - lookup('amazon.aws.secretsmanager_secret', secret_id) == new_pw
+              - lookup('amazon.aws.secretsmanager_secret', secret_id, version_stage='AWSPENDING') == new_pw
             quiet: true
           delegate_to: localhost
           become: false
@@ -121,6 +105,10 @@
           register: pw_changed
           no_log: true
 
+        - name: Note whether the host password changed
+          ansible.builtin.set_fact:
+            host_changed: "{{ pw_changed.changed }}"
+
         - name: Read new root shadow entry
           ansible.builtin.command: getent shadow root
           register: new_shadow
@@ -134,31 +122,51 @@
             quiet: true
           no_log: true
 
+        # ---------- 5. Promote ----------
+        - name: Promote new version to AWSCURRENT
+          secretsmanager_stage:
+            secret_id: "{{ secret_id }}"
+            action: promote
+            version_id: "{{ new_version_id }}"
+          delegate_to: localhost
+          become: false
+          register: promoted
+
+        - name: Log the version ids (no secret values)
+          ansible.builtin.debug:
+            msg: "{{ secret_id }}: AWSCURRENT {{ new_version_id }}, AWSPREVIOUS {{ promoted.previous_version_id }}"
+
       rescue:
+        # Check the secret first: if the new version is already AWSCURRENT
+        # (for example, the promote call succeeded but its response was lost),
+        # the host must keep the new password.
+        - name: Clear AWSPENDING and check which version is current
+          secretsmanager_stage:
+            secret_id: "{{ secret_id }}"
+            action: clear_pending
+            version_id: "{{ new_version_id }}"
+          delegate_to: localhost
+          become: false
+          register: cleared
+          when: new_version_id is defined
+          ignore_errors: true
+
         - name: Restore old hash on host
           ansible.builtin.user:
             name: root
             password: "{{ old_hash }}"
             update_password: always
-          when: old_hash is defined and (pw_changed is changed)
-          no_log: true
-
-        - name: Write old password back to Secrets Manager
-          community.aws.secretsmanager_secret:
-            name: "{{ secret_id }}"
-            secret: "{{ old_pw }}"
-            secret_type: string
-            description: "{{ secret_description }}"
-            overwrite: true
-            state: present
-          delegate_to: localhost
-          become: false
-          when: secret_written | default(false) | bool
+          when:
+            - old_hash is defined
+            - host_changed | default(false) | bool
+            - not (cleared.is_current | default(false))
           no_log: true
 
         - name: Stop this host
           ansible.builtin.fail:
             msg: >-
-              Rotation failed on {{ inventory_hostname }}; host and secret were set back
-              to the old password. If restoring the secret also failed, the old
-              password is in the secret's AWSPREVIOUS version.
+              Rotation failed on {{ inventory_hostname }}.
+              {{ 'The new password was already AWSCURRENT, so the host keeps it.'
+                 if (cleared.is_current | default(false))
+                 else 'The host and AWSCURRENT were left on the old password.' }}
+              Staged version: {{ new_version_id | default('none') }}.
