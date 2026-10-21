@@ -7,32 +7,40 @@ AWS Secrets Manager, without a window where the only working copy could be lost.
 
 Per host:
 
-1. Saves the current `/etc/shadow` hash, so rollback never needs the old plaintext.
+1. Saves the current `/etc/shadow` hash and the current secret value.
 2. Generates a password that meets the length, character-class and
    max-class-repeat rules, and hashes it once.
-3. Writes it to Secrets Manager as `AWSPENDING` and reads it back. `AWSCURRENT` is untouched.
+3. Writes it to Secrets Manager and reads it back. It becomes `AWSCURRENT`,
+   and AWS keeps the old value as `AWSPREVIOUS`.
 4. Sets the hash on the host and checks `/etc/shadow` matches.
-5. Promotes `AWSPENDING` to `AWSCURRENT`. AWS moves the old version to `AWSPREVIOUS`.
 
-If any step fails, the old hash is restored on the host and the `AWSPENDING`
-label is dropped, so the host and `AWSCURRENT` stay on the old password.
-Hosts run one canary first, then 5, then 20% at a time, stopping at the first failure.
+If any step fails, the old hash is restored on the host and the old password
+is written back to the secret. Hosts run one canary first, then 5, then 20% at
+a time, stopping at the first failure.
+
+Everything uses Ansible modules and lookups; there are no AWS CLI calls. The
+AWS modules can't set staging labels, so the secret holds the new password a
+few seconds before the host does.
 
 ### Assumptions
 
 - One secret per host named `root/<inventory_hostname>`, holding a plain string.
   Change `secret_id` in the playbook if yours differ, and adapt the put and
-  read-back steps if the secret holds JSON.
+  read-back steps if the secret holds JSON (the module has a `json_secret` option).
+- `secret_description` in the playbook is written on every update and replaces
+  the secret's existing description.
 - No rotation Lambda is configured on these secrets.
 - Ansible connects with an SSH key and sudo, not the root password.
 
 ### Controller requirements
 
 - Collections: `ansible-galaxy collection install -r requirements.yml`
-- AWS CLI, `boto3`/`botocore`, and `passlib` (used by `password_hash`)
+- `boto3`/`botocore`, and `passlib` (used by `password_hash`)
 - AWS credentials and region from the environment or a profile, with
-  `secretsmanager:DescribeSecret`, `GetSecretValue`, `PutSecretValue` and
-  `UpdateSecretVersionStage` on the secrets
+  at least `secretsmanager:DescribeSecret`, `GetSecretValue`, `PutSecretValue`
+  and `UpdateSecret` on the secrets. The module also reads secret metadata such
+  as tags and resource policy; if a canary run fails on a permission error, add
+  the action it names.
 
 ### Running
 
