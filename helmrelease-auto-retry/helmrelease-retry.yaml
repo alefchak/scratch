@@ -1,0 +1,26 @@
+# Fields to merge into a HelmRelease so Flux keeps retrying failed
+# installs/upgrades on its own (e.g. an image not yet in the registry).
+# See README.md. Replace name/namespace/chart with your own.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: my-app
+  namespace: my-namespace
+spec:
+  interval: 5m        # normal reconcile interval
+  timeout: 5m         # how long each attempt waits for pods to be ready
+  install:
+    strategy:
+      name: RetryOnFailure   # retry a failed install (as an upgrade) instead of uninstalling
+      retryInterval: 2m      # default 5m
+    remediation:
+      retries: -1            # unlimited; covers edge cases where Flux still checks the retry count
+  upgrade:
+    strategy:
+      name: RetryOnFailure   # retry a failed upgrade instead of rolling back
+      retryInterval: 2m
+    remediation:
+      retries: -1
+  # chart:
+  #   spec: ...
+  # values: ...
