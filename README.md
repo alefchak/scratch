@@ -11,3 +11,4 @@ Unrelated tools and experiments, one per folder.
 | [`loki-s3-versioning/`](loki-s3-versioning/) | Terraform for S3 versioning + 30-day noncurrent expiry on Loki's bucket, a deny on version purges for Loki's role, and a restore script |
 | [`ec2-user-data-failfast/`](ec2-user-data-failfast/) | EC2 user-data that fails loudly: fail fast, retries with backoff, validation, and shutdown / ASG `ABANDON` + alert on failure |
 | [`cisco-ntp-ldap-syslog/`](cisco-ntp-ldap-syslog/) | Notes on NTP, LDAPS login with local fallback, and remote syslog for Cisco ASA and NX-OS |
+| [`terragrunt-mock-outputs/`](terragrunt-mock-outputs/) | Why Terragrunt ignores `mock_outputs` for a new, not-yet-applied dependency output, and the merge setting that fixes it |
