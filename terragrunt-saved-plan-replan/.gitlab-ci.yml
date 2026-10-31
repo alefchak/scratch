@@ -1,0 +1,43 @@
+stages:
+  - plan
+  - apply
+
+variables:
+  TG_NON_INTERACTIVE: "true"
+  # apply = re-plan stale units and apply automatically
+  # fail  = stop before the first stale unit (re-run the pipeline to review its plan)
+  REPLAN_POLICY: "apply"
+
+.terragrunt:
+  # Needs: bash 4+, terragrunt, terraform (or tofu), jq, GNU coreutils
+  image: your-registry/terragrunt-ci:latest
+  before_script:
+    - chmod +x ci/tg-plan.sh ci/tg-apply.sh
+
+plan:
+  stage: plan
+  extends: .terragrunt
+  script:
+    - ./ci/tg-plan.sh
+  artifacts:
+    # Plan files can contain sensitive values; keep retention short.
+    paths:
+      - plans/
+      - plans-json/
+    expire_in: 3 days
+
+apply:
+  stage: apply
+  extends: .terragrunt
+  needs: [plan]
+  resource_group: terragrunt-apply   # never run two applies at once
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  script:
+    - ./ci/tg-apply.sh
+  artifacts:
+    when: always
+    paths:
+      - replans/                     # plans for any units that were re-planned
+    expire_in: 3 days

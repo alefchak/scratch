@@ -12,3 +12,4 @@ Unrelated tools and experiments, one per folder.
 | [`ec2-user-data-failfast/`](ec2-user-data-failfast/) | EC2 user-data that fails loudly: fail fast, retries with backoff, validation, and shutdown / ASG `ABANDON` + alert on failure |
 | [`cisco-ntp-ldap-syslog/`](cisco-ntp-ldap-syslog/) | Notes on NTP, LDAPS login with local fallback, and remote syslog for Cisco ASA and NX-OS |
 | [`terragrunt-mock-outputs/`](terragrunt-mock-outputs/) | Why Terragrunt ignores `mock_outputs` for a new, not-yet-applied dependency output, and the merge setting that fixes it |
+| [`terragrunt-saved-plan-replan/`](terragrunt-saved-plan-replan/) | GitLab CI scripts that apply saved Terragrunt plans in dependency order and re-plan units whose upstream outputs changed or were mocked |
