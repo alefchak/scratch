@@ -65,18 +65,22 @@ path from the root Kustomization.
 
 ## Requirements
 
-- Python 3.8+ (standard library only)
+- bash 4+ and jq 1.6+
 - `kubectl` with read access (see [RBAC](#minimal-read-only-rbac))
 - Optional: `crane` or `skopeo`, for `--resolve-digests`
 
 ## Usage
 
+`flux_release_notes.sh` is a single bash script; jq does the parsing, tracing,
+diffing and rendering. It replaced an earlier Python version and writes the same
+snapshot format, so snapshots from either one work as `--previous` for the other.
+
 ```bash
 # Baseline
-./flux_release_notes.py --release v1 --snapshot-out snapshots/v1.json --out RELEASE_NOTES.md
+./flux_release_notes.sh --release v1 --snapshot-out snapshots/v1.json --out RELEASE_NOTES.md
 
 # Next release: diff against the previous snapshot
-./flux_release_notes.py --release v2 --previous snapshots/v1.json \
+./flux_release_notes.sh --release v2 --previous snapshots/v1.json \
     --snapshot-out snapshots/v2.json --images-out images.txt --out RELEASE_NOTES.md
 ```
 
@@ -113,7 +117,7 @@ For private registries it needs credentials: `crane` and `skopeo` both read
 
 ## Running in GitLab CI
 
-`.gitlab-ci.yml` runs the script and keeps snapshots in the project's generic
+`.gitlab-ci.yml` runs the script in a plain `alpine` image and keeps snapshots in the project's generic
 package registry. It authenticates with the built-in `CI_JOB_TOKEN`, so you
 don't need to create any tokens.
 
