@@ -71,9 +71,9 @@ path from the root Kustomization.
 
 ## Usage
 
-`flux_release_notes.sh` is a single bash script; jq does the parsing, tracing,
-diffing and rendering. It replaced an earlier Python version and writes the same
-snapshot format, so snapshots from either one work as `--previous` for the other.
+`flux_release_notes.sh` is a bash script: kubectl reads the cluster and jq does the
+rest. Its snapshots use the same format as the earlier Python version, so old
+snapshots still work with `--previous`.
 
 ```bash
 # Baseline
@@ -84,11 +84,12 @@ snapshot format, so snapshots from either one work as `--previous` for the other
     --snapshot-out snapshots/v2.json --images-out images.txt --out RELEASE_NOTES.md
 ```
 
-With `--previous`, the notes start with a **Changes since …** section. It lists:
+With `--previous`, the summary starts with a **What changed** section, grouped by
+the repo that delivers each change:
 
-- **Sources:** each source whose URL, ref or commit changed, with a compare link.
-- **Helm charts:** each chart added, removed or changed, by chart name, version, app version, digest or source.
-- **Images:** each image added, updated or removed, grouped by the repo that delivers it.
+- **Sources:** each repo that moved to a new commit, tag or URL, with a compare link.
+- **Helm charts:** each chart added, removed or upgraded.
+- **Images:** each image added, updated, re-pushed or removed.
 
 | Option | Purpose |
 |---|---|
