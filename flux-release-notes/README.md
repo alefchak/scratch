@@ -116,6 +116,30 @@ index digest. `--resolve-digests` asks the registry for the same kind of digest.
 For private registries it needs credentials: `crane` and `skopeo` both read
 `~/.docker/config.json`, and `skopeo` also honours `REGISTRY_AUTH_FILE`.
 
+## Just what's deployed: `flux_inventory.sh`
+
+A much smaller script (about 100 lines) for when you only want a picture of the
+cluster as it is now. It writes Markdown tables of the Git and OCI repositories,
+Helm charts and container images Flux has deployed. It has no snapshots, no
+comparison with earlier releases, no warnings and no registry lookups, and it
+skips Buckets.
+
+```bash
+./flux_inventory.sh --context prod --out INVENTORY.md
+```
+
+| Option | Purpose |
+|---|---|
+| `--context`, `--kubeconfig` | Which cluster to read |
+| `-n`, `--namespace` | Only list images from workloads in one namespace |
+| `--out` | Markdown output file (default: stdout) |
+
+Images come from workloads (Deployments, StatefulSets, DaemonSets, CronJobs) that
+carry a Flux label. Digests come from the running pods, or from the image
+reference if it is pinned. A workload with no running pods shows the digest as
+unknown. Pods created by operators from custom resources aren't listed. Use
+`flux_release_notes.sh` if you need those.
+
 ## Running in GitLab CI
 
 `.gitlab-ci.yml` runs the script in a plain `alpine` image and keeps snapshots in the project's generic
